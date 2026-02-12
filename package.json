@@ -1,0 +1,17 @@
+{
+    "name": "querymind-ai-root",
+    "version": "1.0.0",
+    "description": "Root management for QueryMind AI",
+    "scripts": {
+        "setup": "bash setup.sh",
+        "dev": "concurrently \"npm run backend\" \"npm run frontend\"",
+        "backend": "cd backend && python -m uvicorn main:app --reload",
+        "frontend": "cd frontend && npm run dev",
+        "docker:up": "docker compose up -d",
+        "docker:down": "docker compose down",
+        "docker:logs": "docker compose logs -f"
+    },
+    "devDependencies": {
+        "concurrently": "^8.2.2"
+    }
+}

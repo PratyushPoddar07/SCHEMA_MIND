@@ -1,0 +1,117 @@
+import axios, { AxiosInstance } from 'axios';
+import type { 
+  Query, 
+  DatabaseConnection, 
+  SchemaInfo, 
+  QueryRequest,
+  ApiResponse 
+} from '@/types';
+
+class ApiService {
+  private api: AxiosInstance;
+
+  constructor() {
+    this.api = axios.create({
+      baseURL: '/api/v1',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+
+    // Request interceptor
+    this.api.interceptors.request.use(
+      (config) => {
+        // Add auth token if available
+        const token = localStorage.getItem('token');
+        if (token) {
+          config.headers.Authorization = `Bearer ${token}`;
+        }
+        return config;
+      },
+      (error) => Promise.reject(error)
+    );
+
+    // Response interceptor
+    this.api.interceptors.response.use(
+      (response) => response,
+      (error) => {
+        console.error('API Error:', {
+          url: error.config?.url,
+          method: error.config?.method,
+          status: error.response?.status,
+          data: error.response?.data,
+          message: error.message
+        });
+
+        if (error.response?.status === 401) {
+          // Handle unauthorized
+          localStorage.removeItem('token');
+          if (window.location.pathname !== '/login') {
+            window.location.href = '/login';
+          }
+        }
+        
+        // Enhance error message for the UI
+        const errorMessage = error.response?.data?.detail || error.message || 'An unexpected error occurred';
+        return Promise.reject({ ...error, message: errorMessage });
+      }
+    );
+  }
+
+  // Query endpoints
+  async executeQuery(request: QueryRequest): Promise<Query> {
+    const response = await this.api.post<Query>('/query', request);
+    return response.data;
+  }
+
+  async getQueryHistory(databaseId?: number, limit: number = 20): Promise<Query[]> {
+    const params = new URLSearchParams();
+    if (databaseId) params.append('database_id', databaseId.toString());
+    params.append('limit', limit.toString());
+    
+    const response = await this.api.get<Query[]>(`/queries/history?${params}`);
+    return response.data;
+  }
+
+  // Database endpoints
+  async getDatabases(): Promise<DatabaseConnection[]> {
+    const response = await this.api.get<DatabaseConnection[]>('/databases');
+    return response.data;
+  }
+
+  async createDatabase(data: {
+    name: string;
+    db_type: string;
+    connection_string: string;
+  }): Promise<DatabaseConnection> {
+    const response = await this.api.post<DatabaseConnection>('/databases', data);
+    return response.data;
+  }
+
+  async getSchema(databaseId: number): Promise<SchemaInfo> {
+    const response = await this.api.get<SchemaInfo>(
+      `/databases/${databaseId}/schema`
+    );
+    return response.data;
+  }
+
+  async getTableSample(
+    databaseId: number,
+    tableName: string,
+    limit: number = 5
+  ): Promise<any> {
+    const response = await this.api.get(
+      `/databases/${databaseId}/tables/${tableName}/sample?limit=${limit}`
+    );
+    return response.data;
+  }
+
+  // Health check
+  async healthCheck(): Promise<{ status: string; version: string }> {
+    const response = await this.api.get('/health');
+    return response.data;
+  }
+}
+
+export const apiService = new ApiService();
+export default apiService;
