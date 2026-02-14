@@ -16,12 +16,12 @@ export default function Dashboard() {
   const [selectedTable, setSelectedTable] = useState<TableInfo | null>(null);
   const [showSchema, setShowSchema] = useState(false);
   const [isAddDbOpen, setIsAddDbOpen] = useState(false);
-  const [newDb, setNewDb] = useState({ 
-    name: '', 
-    db_type: 'postgresql' as const, 
-    connection_string: '' 
+  const [newDb, setNewDb] = useState({
+    name: '',
+    db_type: 'postgresql' as const,
+    connection_string: ''
   });
-  
+
   const {
     selectedDatabase,
     setSelectedDatabase,
@@ -30,29 +30,29 @@ export default function Dashboard() {
     sidebarOpen,
     toggleSidebar
   } = useAppStore();
-  
+
   const queryClient = useQueryClient();
-  
+
   // Fetch databases
   const { data: databases } = useQuery({
     queryKey: ['databases'],
     queryFn: apiService.getDatabases,
   });
-  
+
   // Fetch schema
   const { data: schema } = useQuery({
     queryKey: ['schema', selectedDatabase?.id],
     queryFn: () => apiService.getSchema(selectedDatabase!.id),
     enabled: !!selectedDatabase,
   });
-  
+
   // Fetch query history
   const { data: queryHistory } = useQuery({
     queryKey: ['query-history', selectedDatabase?.id],
     queryFn: () => apiService.getQueryHistory(selectedDatabase?.id),
     enabled: !!selectedDatabase,
   });
-  
+
   // Execute query mutation
   const executeMutation = useMutation({
     mutationFn: (query: string) => apiService.executeQuery({
@@ -67,7 +67,9 @@ export default function Dashboard() {
       toast.success('Query executed successfully!');
     },
     onError: (error: any) => {
-      toast.error(error.response?.data?.detail || 'Failed to execute query');
+      console.error('Query Execution Error:', error);
+      const msg = error.response?.data?.detail || error.message || JSON.stringify(error);
+      toast.error(`Query Failed: ${msg}`);
     },
   });
 
@@ -81,17 +83,19 @@ export default function Dashboard() {
       toast.success('Database added successfully!');
     },
     onError: (error: any) => {
-      toast.error(error.response?.data?.detail || 'Failed to add database');
+      console.error('Add DB Error:', error);
+      const msg = error.response?.data?.detail || error.message || 'Failed to add database';
+      toast.error(`Error: ${msg}`);
     }
   });
-  
+
   // Auto-select first database
   useEffect(() => {
     if (databases && databases.length > 0 && !selectedDatabase) {
       setSelectedDatabase(databases[0]);
     }
   }, [databases, selectedDatabase, setSelectedDatabase]);
-  
+
   const handleQuerySubmit = (query: string) => {
     if (!selectedDatabase) {
       toast.error('Please select a database first');
@@ -108,14 +112,14 @@ export default function Dashboard() {
     }
     addDbMutation.mutate(newDb);
   };
-  
+
   const latestQuery = queries[0];
-  
+
   return (
     <div className="min-h-screen relative overflow-hidden bg-[#0a0a0f]">
       <Toaster position="top-right" />
       <Background3D />
-      
+
       <div className="relative z-10 flex flex-col h-screen">
         {/* Header */}
         <header className="glass-effect border-b border-white/10 shrink-0">
@@ -128,12 +132,12 @@ export default function Dashboard() {
                 >
                   {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
                 </button>
-                
+
                 <h1 className="text-2xl font-bold gradient-text tracking-tight">
                   QueryMind AI
                 </h1>
               </div>
-              
+
               <div className="flex items-center gap-3">
                 {selectedDatabase && (
                   <div className="glass-effect px-4 py-2 rounded-lg flex items-center gap-2 border border-primary-500/20">
@@ -141,12 +145,11 @@ export default function Dashboard() {
                     <span className="text-sm font-medium">{selectedDatabase.name}</span>
                   </div>
                 )}
-                
+
                 <button
                   onClick={() => setShowSchema(!showSchema)}
-                  className={`p-2 rounded-lg transition-all flex items-center gap-2 px-3 ${
-                    showSchema ? 'bg-primary-600 shadow-lg shadow-primary-600/30' : 'glass-effect hover:bg-white/10'
-                  }`}
+                  className={`p-2 rounded-lg transition-all flex items-center gap-2 px-3 ${showSchema ? 'bg-primary-600 shadow-lg shadow-primary-600/30' : 'glass-effect hover:bg-white/10'
+                    }`}
                   title="Toggle Schema Visualizer"
                 >
                   <Settings className="w-5 h-5" />
@@ -156,7 +159,7 @@ export default function Dashboard() {
             </div>
           </div>
         </header>
-        
+
         {/* Main layout */}
         <div className="flex flex-1 overflow-hidden">
           {/* Sidebar */}
@@ -172,7 +175,7 @@ export default function Dashboard() {
                   <h3 className="text-xs font-bold text-gray-500 uppercase tracking-widest">
                     Databases
                   </h3>
-                  <button 
+                  <button
                     onClick={() => setIsAddDbOpen(true)}
                     className="p-1.5 hover:bg-primary-600/20 text-primary-400 rounded-md transition-colors"
                     title="Add Database"
@@ -180,17 +183,16 @@ export default function Dashboard() {
                     <Plus className="w-4 h-4" />
                   </button>
                 </div>
-                
+
                 <div className="space-y-2">
                   {databases?.map((db) => (
                     <button
                       key={db.id}
                       onClick={() => setSelectedDatabase(db)}
-                      className={`w-full text-left p-3 rounded-xl transition-all border ${
-                        selectedDatabase?.id === db.id
-                          ? 'bg-primary-600/20 border-primary-500/50'
-                          : 'glass-effect border-transparent hover:border-white/10 hover:bg-white/5'
-                      }`}
+                      className={`w-full text-left p-3 rounded-xl transition-all border ${selectedDatabase?.id === db.id
+                        ? 'bg-primary-600/20 border-primary-500/50'
+                        : 'glass-effect border-transparent hover:border-white/10 hover:bg-white/5'
+                        }`}
                     >
                       <div className="flex items-center gap-3">
                         <div className={`p-2 rounded-lg ${selectedDatabase?.id === db.id ? 'bg-primary-500 text-white' : 'bg-white/5 text-gray-400'}`}>
@@ -222,11 +224,10 @@ export default function Dashboard() {
                         <button
                           key={tableName}
                           onClick={() => setSelectedTable(schema.tables[tableName])}
-                          className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-all flex items-center justify-between group ${
-                            selectedTable?.name === tableName
-                              ? 'bg-white/10 text-white'
-                              : 'text-gray-400 hover:text-gray-200 hover:bg-white/5'
-                          }`}
+                          className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-all flex items-center justify-between group ${selectedTable?.name === tableName
+                            ? 'bg-white/10 text-white'
+                            : 'text-gray-400 hover:text-gray-200 hover:bg-white/5'
+                            }`}
                         >
                           <div className="flex items-center gap-2">
                             <Table className="w-4 h-4 opacity-50" />
@@ -241,7 +242,7 @@ export default function Dashboard() {
                   </div>
                 </section>
               )}
-              
+
               {/* History Section */}
               <section className="mt-auto pt-6 border-t border-white/5">
                 <h3 className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-3 flex items-center gap-2">
@@ -263,7 +264,7 @@ export default function Dashboard() {
               </section>
             </div>
           </motion.aside>
-          
+
           {/* Main content area */}
           <main className="flex-1 overflow-y-auto overflow-x-hidden relative">
             <div className="max-w-7xl mx-auto p-6 space-y-6 pb-32">
@@ -285,7 +286,7 @@ export default function Dashboard() {
                   </motion.div>
                 )}
               </AnimatePresence>
-              
+
               {/* Selected Table Detail View */}
               <AnimatePresence>
                 {selectedTable && (
@@ -302,7 +303,7 @@ export default function Dashboard() {
                         </div>
                         <h3 className="text-lg font-bold text-white">{selectedTable.name}</h3>
                       </div>
-                      <button 
+                      <button
                         onClick={() => setSelectedTable(null)}
                         className="text-gray-500 hover:text-white transition-colors"
                       >
@@ -323,18 +324,18 @@ export default function Dashboard() {
                   </motion.div>
                 )}
               </AnimatePresence>
-              
+
               {/* Query Area */}
               <div className="max-w-4xl mx-auto space-y-6">
                 <QueryInput
                   onSubmit={handleQuerySubmit}
                   isLoading={executeMutation.isPending}
                 />
-                
+
                 {latestQuery && (
                   <ResultsDisplay query={latestQuery} />
                 )}
-                
+
                 {!latestQuery && !executeMutation.isPending && (
                   <motion.div
                     initial={{ opacity: 0 }}
@@ -349,7 +350,7 @@ export default function Dashboard() {
                         Ready for Insights?
                       </h2>
                       <p className="text-gray-400 mb-10 leading-relaxed text-lg">
-                        Connect your data and ask anything. Our AI will handle the 
+                        Connect your data and ask anything. Our AI will handle the
                         complex SQL, so you can focus on the answers.
                       </p>
                       <div className="grid grid-cols-1 gap-4">
@@ -407,8 +408,8 @@ export default function Dashboard() {
                       <p className="text-sm text-gray-500">Connect a new data source to start querying</p>
                     </div>
                   </div>
-                  <button 
-                    onClick={() => setIsAddDbOpen(false)} 
+                  <button
+                    onClick={() => setIsAddDbOpen(false)}
                     className="p-2 hover:bg-white/5 rounded-lg text-gray-500 hover:text-white transition-all"
                   >
                     <X className="w-5 h-5" />
@@ -419,11 +420,11 @@ export default function Dashboard() {
                   <div className="space-y-4">
                     <div className="space-y-1.5">
                       <label className="text-xs font-bold text-gray-500 uppercase tracking-wider px-1">Connection Name</label>
-                      <input 
-                        type="text" 
+                      <input
+                        type="text"
                         placeholder="e.g. Production PostgreSQL"
                         value={newDb.name}
-                        onChange={(e) => setNewDb({...newDb, name: e.target.value})}
+                        onChange={(e) => setNewDb({ ...newDb, name: e.target.value })}
                         className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-primary-500 focus:ring-1 focus:ring-primary-500 transition-all placeholder:text-gray-600"
                         required
                       />
@@ -432,9 +433,9 @@ export default function Dashboard() {
                     <div className="grid grid-cols-2 gap-4">
                       <div className="space-y-1.5">
                         <label className="text-xs font-bold text-gray-500 uppercase tracking-wider px-1">System Type</label>
-                        <select 
+                        <select
                           value={newDb.db_type}
-                          onChange={(e) => setNewDb({...newDb, db_type: e.target.value as any})}
+                          onChange={(e) => setNewDb({ ...newDb, db_type: e.target.value as any })}
                           className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-primary-500 transition-all appearance-none cursor-pointer"
                         >
                           <option value="postgresql" className="bg-[#1a1a1f]">PostgreSQL</option>
@@ -448,11 +449,11 @@ export default function Dashboard() {
                     <div className="space-y-1.5">
                       <label className="text-xs font-bold text-gray-500 uppercase tracking-wider px-1">Connection URI</label>
                       <div className="relative">
-                        <input 
-                          type="password" 
+                        <input
+                          type="password"
                           placeholder="postgresql://user:pass@host:port/db"
                           value={newDb.connection_string}
-                          onChange={(e) => setNewDb({...newDb, connection_string: e.target.value})}
+                          onChange={(e) => setNewDb({ ...newDb, connection_string: e.target.value })}
                           className="w-full bg-white/5 border border-white/10 rounded-xl pl-4 pr-12 py-3 text-white focus:outline-none focus:border-primary-500 focus:ring-1 focus:ring-primary-500 transition-all placeholder:text-gray-600"
                           required
                         />
@@ -465,14 +466,14 @@ export default function Dashboard() {
                   </div>
 
                   <div className="flex gap-3 pt-4">
-                    <button 
+                    <button
                       type="button"
                       onClick={() => setIsAddDbOpen(false)}
                       className="flex-1 py-4 bg-white/5 hover:bg-white/10 text-white font-bold rounded-xl transition-all border border-white/5"
                     >
                       Cancel
                     </button>
-                    <button 
+                    <button
                       type="submit"
                       disabled={addDbMutation.isPending}
                       className="flex-[2] py-4 bg-primary-600 hover:bg-primary-500 disabled:opacity-50 text-white font-bold rounded-xl transition-all shadow-xl shadow-primary-600/20 active:scale-[0.98]"

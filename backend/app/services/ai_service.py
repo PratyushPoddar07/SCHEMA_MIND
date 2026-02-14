@@ -1,4 +1,5 @@
 from anthropic import Anthropic
+from openai import OpenAI
 from typing import Dict, Any, List, Optional
 import json
 from app.core.config import settings
@@ -10,9 +11,38 @@ class AIService:
     """AI service for natural language processing and SQL generation"""
     
     def __init__(self):
-        self.client = Anthropic(api_key=settings.ANTHROPIC_API_KEY)
-        self.model = "claude-sonnet-4-20250514"
+        self.use_openai = bool(settings.OPENAI_API_KEY and settings.OPENAI_API_KEY != "your_openai_api_key_here")
+        self.use_anthropic = bool(settings.ANTHROPIC_API_KEY and settings.ANTHROPIC_API_KEY != "your_anthropic_api_key_here")
+        
+        if self.use_openai:
+            self.openai_client = OpenAI(api_key=settings.OPENAI_API_KEY)
+            self.openai_model = "gpt-4o"
+        
+        if self.use_anthropic:
+            self.anthropic_client = Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+            self.anthropic_model = "claude-3-5-sonnet-20240620"
+        
+        # Default to OpenAI if available, else Anthropic
+        self.preferred_provider = "openai" if self.use_openai else "anthropic"
     
+    async def _call_ai(self, prompt: str, max_tokens: int = 2000) -> str:
+        """Helper to call the preferred AI provider"""
+        if self.preferred_provider == "openai":
+            response = self.openai_client.chat.completions.create(
+                model=self.openai_model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=max_tokens,
+                response_format={"type": "json_object"} if "JSON" in prompt.upper() else None
+            )
+            return response.choices[0].message.content
+        else:
+            response = self.anthropic_client.messages.create(
+                model=self.anthropic_model,
+                max_tokens=max_tokens,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            return response.content[0].text
+
     async def generate_sql(
         self,
         natural_language: str,
@@ -35,54 +65,51 @@ class AIService:
                 conversation_context += f"{msg['role']}: {msg['content']}\n"
         
         if is_mongodb:
-            query_type = "MongoDB Aggregation Pipeline (JSON)"
+            query_type = "MongoDB operation (Aggregation, Insert, Update, or Delete)"
             syntax_rules = """
-1. Use MongoDB aggregation pipeline syntax as a JSON array
-2. Use $match, $group, $project, $lookup, $sort, $limit, etc.
-3. IMPORTANT: For MongoDB, the "sql" field must be a JSON object containing:
-   {"collection": "target_collection_name", "pipeline": [...]}
-4. Optimize for performance
+1. Use MongoDB aggregation pipeline syntax as a JSON array if reading data.
+2. If the user wants to INSERT, UPDATE, or DELETE, use the following JSON wrapper format:
+   - Aggregation: {"collection": "coll", "pipeline": [...]}
+   - Insert: {"collection": "coll", "insert": {document}}
+   - Update: {"collection": "coll", "update": {$set: {...}}, "filter": {...}}
+   - Delete: {"collection": "coll", "delete": true, "filter": {...}}
+3. Optimize for performance.
 """
         else:
-            query_type = "precise SQL query"
+            query_type = "precise SQL query (SELECT, INSERT, UPDATE, DELETE, CREATE, etc.)"
             syntax_rules = """
-1. Use proper SQL syntax for the database type
-2. Include appropriate WHERE clauses, JOINs, and aggregations
-3. Optimize for performance
-4. Return ONLY valid SQL
+1. Use proper SQL syntax for the database type.
+2. Support full database control: SELECT, INSERT, UPDATE, DELETE, CREATE TABLE, ALTER, DROP, etc.
+3. Include appropriate WHERE clauses, JOINs, and aggregations.
+4. Optimize for performance.
+5. Return ONLY valid SQL.
 """
 
-        prompt = f"""You are an expert database query generator. Convert the natural language question into a {query_type}.
+        prompt = f"""You are an expert database administrator and query generator. 
+Convert the natural language command/question into a {query_type}.
 
 Database Type: {db_type}
 Database Schema:
 {schema_context}
 {conversation_context}
 
-User Question: {natural_language}
+User Input: {natural_language}
 
 Rules:
 {syntax_rules}
-5. Return ONLY valid response, no explanations in the query itself
+6. Return ONLY valid response, no explanations in the query itself.
 
 Respond in JSON format:
 {{
-    "sql": "Actual query string or JSON array string",
-    "explanation": "Step-by-step explanation of the query logic",
+    "sql": "Actual query string or JSON operation object",
+    "explanation": "Brief non-technical explanation of what this query/operation will do",
     "confidence": 0.95,
     "tables_used": ["collection_name_or_table"],
     "complexity_score": 5
 }}
 """
         
-        response = self.client.messages.create(
-            model=self.model,
-            max_tokens=2000,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        
-        # Parse response
-        content = response.content[0].text
+        content = await self._call_ai(prompt, max_tokens=2000)
         
         # Extract JSON from response
         json_match = re.search(r'\{.*\}', content, re.DOTALL)
@@ -105,49 +132,49 @@ Respond in JSON format:
         query_results: List[Dict[str, Any]],
         original_question: str
     ) -> List[DataInsight]:
-        """Generate AI-powered insights from query results"""
+        """Generate AI-powered insights and plain-language summaries from query results"""
         
         if not query_results:
-            return []
+            return [DataInsight(
+                type="summary",
+                title="No results found",
+                description="The query executed successfully but returned no data matching your criteria.",
+                confidence=1.0
+            )]
         
         # Prepare data summary
         data_summary = {
             "row_count": len(query_results),
             "columns": list(query_results[0].keys()) if query_results else [],
-            "sample_data": query_results[:5]
+            "sample_data": query_results[:10] # Give more samples
         }
         
-        prompt = f"""Analyze the following data and provide intelligent insights.
+        prompt = f"""Analyze the following dataset and explain what it means in plain, non-technical English.
 
-Original Question: {original_question}
+User's Original Goal: {original_question}
 
 Data Summary:
 {json.dumps(data_summary, indent=2, default=str)}
 
-Provide insights in JSON format as an array:
+Provide insights in JSON format as an array. 
+The first item MUST be a 'summary' type that provides a high-level plain language explanation of the results.
+
 [
     {{
-        "type": "trend|anomaly|pattern|summary",
-        "title": "Brief title",
-        "description": "Detailed insight",
+        "type": "summary|trend|anomaly|pattern",
+        "title": "Clear Headline",
+        "description": "Plain language explanation",
         "confidence": 0.0-1.0
     }}
 ]
 
 Focus on:
-- Notable trends or patterns
-- Anomalies or outliers
-- Key statistics
-- Actionable recommendations
+- Interpreting the numbers (e.g., "The average sales are higher than last month")
+- Identifying key takeaways
+- Explaining unusual findings
 """
         
-        response = self.client.messages.create(
-            model=self.model,
-            max_tokens=1500,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        
-        content = response.content[0].text
+        content = await self._call_ai(prompt, max_tokens=1500)
         
         # Extract JSON array
         json_match = re.search(r'\[.*\]', content, re.DOTALL)
@@ -176,13 +203,8 @@ Focus on:
 4. The purpose of the query
 """
         
-        response = self.client.messages.create(
-            model=self.model,
-            max_tokens=800,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        
-        return response.content[0].text
+        content = await self._call_ai(prompt, max_tokens=800)
+        return content
     
     async def suggest_visualizations(
         self,
@@ -215,13 +237,7 @@ Suggest 2-3 visualization types from:
 Return as JSON array: ["type1", "type2", "type3"]
 """
         
-        response = self.client.messages.create(
-            model=self.model,
-            max_tokens=300,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        
-        content = response.content[0].text
+        content = await self._call_ai(prompt, max_tokens=300)
         json_match = re.search(r'\[.*\]', content, re.DOTALL)
         if json_match:
             return json.loads(json_match.group())
@@ -259,13 +275,8 @@ Provide optimization suggestions for:
 - Performance improvements
 """
         
-        response = self.client.messages.create(
-            model=self.model,
-            max_tokens=1000,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        
-        return response.content[0].text
+        content = await self._call_ai(prompt, max_tokens=1000)
+        return content
 
 
 # Singleton instance

@@ -6,6 +6,7 @@ from app.core.config import settings
 from app.schemas.schemas import QueryStatus
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import re
 
 
 class QueryExecutor:
@@ -43,7 +44,8 @@ class QueryExecutor:
     async def execute_query(
         self,
         sql: str,
-        max_rows: int = 1000
+        max_rows: int = 1000,
+        read_only: bool = True
     ) -> Dict[str, Any]:
         """Execute SQL query and return results"""
         
@@ -84,33 +86,56 @@ class QueryExecutor:
                 
                 try:
                     # Try to parse as JSON pipeline
-                    pipeline = json.loads(sql_stripped)
-                    if not isinstance(pipeline, list):
-                        raise ValueError("MongoDB pipeline must be a JSON array")
+                    pipeline_data = json.loads(sql_stripped)
                     
-                    # We need the collection name. If not provided, we try to infer from AI metadata OR use the first collection
-                    # For now, let's assume the first stage might indicate the collection or we take it from a wrapper
-                    # BETTER: Since AIService returns tables_used, but we only get 'sql' string here,
-                    # we'll assume the 'sql' might be wrapped as {"collection": "...", "pipeline": [...]}
-                    
-                    data = json.loads(sql_stripped)
-                    if isinstance(data, dict) and "collection" in data and "pipeline" in data:
-                        coll_name = data["collection"]
-                        actual_pipeline = data["pipeline"]
+                    # Handle different MongoDB operation types if they are wrapped
+                    if isinstance(pipeline_data, dict) and "collection" in pipeline_data:
+                        coll_name = pipeline_data["collection"]
+                        
+                        # Handle Aggregation
+                        if "pipeline" in pipeline_data:
+                            actual_pipeline = pipeline_data["pipeline"]
+                            results = list(self.mongo_db[coll_name].aggregate(actual_pipeline))
+                        
+                        # Handle Insert
+                        elif "insert" in pipeline_data:
+                            doc = pipeline_data["insert"]
+                            res = self.mongo_db[coll_name].insert_one(doc)
+                            results = [{"inserted_id": str(res.inserted_id), "success": True}]
+                        
+                        # Handle Update
+                        elif "update" in pipeline_data:
+                            filter_query = pipeline_data.get("filter", {})
+                            update_query = pipeline_data["update"]
+                            res = self.mongo_db[coll_name].update_many(filter_query, update_query)
+                            results = [{"matched_count": res.matched_count, "modified_count": res.modified_count, "success": True}]
+                        
+                        # Handle Delete
+                        elif "delete" in pipeline_data:
+                            filter_query = pipeline_data.get("filter", {})
+                            res = self.mongo_db[coll_name].delete_many(filter_query)
+                            results = [{"deleted_count": res.deleted_count, "success": True}]
+                        
+                        else:
+                            return {
+                                "status": QueryStatus.ERROR,
+                                "error": "Unknown MongoDB operation. Supporting 'pipeline', 'insert', 'update', 'delete'.",
+                                "results": [],
+                                "execution_time_ms": 0
+                            }
                     else:
                         # Fallback: AI generated just the array, we need to find which collection.
                         # As a temporary heuristic, we'll return an error asking for collection if not found.
                         return {
                             "status": QueryStatus.ERROR,
-                            "error": "MongoDB query format mismatch. Expected JSON with 'collection' and 'pipeline'.",
+                            "error": "MongoDB query format mismatch. Expected JSON with 'collection' and operation details.",
                             "results": [],
                             "execution_time_ms": 0
                         }
 
-                    results = list(self.mongo_db[coll_name].aggregate(actual_pipeline))
-                    # Serialize ObjectIds
+                    # Serialize ObjectIds for any remaining docs
                     for doc in results:
-                        if "_id" in doc:
+                        if isinstance(doc, dict) and "_id" in doc:
                             doc["_id"] = str(doc["_id"])
                     
                     return {
@@ -122,16 +147,16 @@ class QueryExecutor:
                 except Exception as mongo_err:
                     return {
                         "status": QueryStatus.ERROR,
-                        "error": f"MongoDB Aggregation Error: {str(mongo_err)}",
+                        "error": f"MongoDB Error: {str(mongo_err)}",
                         "results": [],
                         "execution_time_ms": 0
                     }
 
             # Validate query
-            if not self._is_safe_query(sql):
+            if read_only and not self._is_safe_query(sql):
                 return {
                     "status": QueryStatus.ERROR,
-                    "error": "Unsafe query detected. Only SELECT statements are allowed.",
+                    "error": "Unsafe query detected. Only SELECT statements are allowed in read-only mode.",
                     "results": [],
                     "execution_time_ms": 0
                 }
@@ -170,25 +195,37 @@ class QueryExecutor:
             return [] # Should be handled in execute_query
             
         with self.engine.connect() as conn:
-            result = conn.execute(text(sql))
-            
-            # Fetch results
-            rows = []
-            for i, row in enumerate(result):
-                if i >= max_rows:
-                    break
-                rows.append(dict(row._mapping))
-            
-            return rows
+            # Transaction for non-SELECT queries
+            trans = conn.begin()
+            try:
+                result = conn.execute(text(sql))
+                
+                # Fetch results if it returns rows
+                rows = []
+                if result.returns_rows:
+                    for i, row in enumerate(result):
+                        if i >= max_rows:
+                            break
+                        rows.append(dict(row._mapping))
+                else:
+                    # For DML, return affected row count
+                    rows = [{"rowcount": result.rowcount, "success": True}]
+                
+                trans.commit()
+                return rows
+            except Exception as e:
+                trans.rollback()
+                raise e
     
     def _is_safe_query(self, sql: str) -> bool:
         """Validate that query is safe (read-only)"""
         sql_upper = sql.upper().strip()
         
-        # Forbidden keywords
+        # Forbidden keywords for read-only mode
         forbidden = [
             "INSERT", "UPDATE", "DELETE", "DROP", "CREATE",
-            "ALTER", "TRUNCATE", "GRANT", "REVOKE", "EXEC"
+            "ALTER", "TRUNCATE", "GRANT", "REVOKE", "EXEC",
+            "REPLACE", "MERGE"
         ]
         
         # Check if query starts with SELECT or WITH (for CTEs)
@@ -197,10 +234,12 @@ class QueryExecutor:
         
         # Check for forbidden keywords
         for keyword in forbidden:
-            if keyword in sql_upper:
+            # Use regex for better matching if needed, but simple string check for now
+            if re.search(rf"\b{keyword}\b", sql_upper):
                 return False
         
         return True
+
     
     async def test_connection(self) -> bool:
         """Test database connection. Raises exception if failed."""
@@ -208,8 +247,12 @@ class QueryExecutor:
             self.mongo_client.admin.command('ping')
             return True
         
-        with self.engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
+        loop = asyncio.get_event_loop()
+        def _test():
+            with self.engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+        
+        await loop.run_in_executor(self.executor, _test)
         return True
     
     def close(self):
@@ -287,9 +330,11 @@ class QueryValidator:
     @staticmethod
     def add_safety_limits(sql: str, max_rows: int = 1000) -> str:
         """Add safety limits to query"""
-        sql_upper = sql.upper()
+        sql_upper = sql.upper().strip()
         
-        if "LIMIT" not in sql_upper and "TOP" not in sql_upper:
+        # Only add LIMIT to SELECT queries that don't already have it
+        if (sql_upper.startswith("SELECT") or sql_upper.startswith("WITH")) and \
+           "LIMIT" not in sql_upper and "TOP" not in sql_upper:
             sql = sql.rstrip(";")
             sql += f" LIMIT {max_rows}"
         

@@ -1,13 +1,13 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from app.core.config import settings
 from app.api import query_routes
 from app.db.database import init_db
+import app.core.logging_config # Configure logging
 import logging
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Create FastAPI app
@@ -37,6 +37,17 @@ app.include_router(
     prefix=f"{settings.API_V1_PREFIX}",
     tags=["queries"]
 )
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    logger.info(f"Incoming request: {request.method} {request.url}")
+    try:
+        response = await call_next(request)
+        logger.info(f"Request processed: {response.status_code}")
+        return response
+    except Exception as e:
+        logger.error(f"Request failed: {e}")
+        raise e
 
 
 @app.on_event("startup")

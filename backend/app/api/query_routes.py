@@ -16,6 +16,19 @@ from datetime import datetime
 router = APIRouter()
 
 
+import logging
+
+logger = logging.getLogger(__name__)
+# Force a file handler for debugging
+debug_handler = logging.FileHandler("backend_debug.log")
+debug_handler.setLevel(logging.INFO)
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+debug_handler.setFormatter(formatter)
+logger.addHandler(debug_handler)
+logger.setLevel(logging.INFO)
+
+# ... existing imports ...
+
 @router.post("/query", response_model=QueryResponse)
 async def execute_natural_language_query(
     request: QueryRequest,
@@ -30,6 +43,7 @@ async def execute_natural_language_query(
     3. Generates insights from results
     4. Returns formatted response
     """
+    logger.info(f"DEBUG: execute_natural_language_query started for DB ID {request.database_id}")
     
     # Get database connection
     db_conn = db.query(DatabaseConnection).filter(
@@ -38,12 +52,14 @@ async def execute_natural_language_query(
     ).first()
     
     if not db_conn:
+        logger.error(f"DEBUG: Database connection {request.database_id} not found")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Database connection not found"
         )
     
     # Get schema information
+    logger.info(f"DEBUG: Getting schema info for {db_conn.name}")
     inspector = DatabaseInspector(db_conn.connection_string)
     schema_info = inspector.get_schema_info()
     
@@ -65,20 +81,25 @@ async def execute_natural_language_query(
     
     # Generate SQL using AI
     try:
+        logger.info(f"DEBUG: Generating SQL for query: {request.natural_language_query}")
         sql_result = await ai_service.generate_sql(
             natural_language=request.natural_language_query,
             schema_info=schema_info,
             conversation_history=conversation_history
         )
+        logger.info(f"DEBUG: Generated SQL: {sql_result.sql}")
     except Exception as e:
+        logger.error(f"DEBUG: Failed to generate SQL: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate SQL: {str(e)}"
         )
     
+    
     # Validate query complexity
     validation = QueryValidator.validate_complexity(sql_result.sql)
     if not validation["is_valid"]:
+        logger.warning(f"DEBUG: Query too complex: {validation['issues']}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Query too complex: {', '.join(validation['issues'])}"
@@ -88,8 +109,13 @@ async def execute_natural_language_query(
     safe_sql = QueryValidator.add_safety_limits(sql_result.sql)
     
     # Execute query
+    logger.info(f"DEBUG: Executing SQL: {safe_sql}")
     executor = QueryExecutor(db_conn.connection_string)
-    execution_result = await executor.execute_query(safe_sql)
+    execution_result = await executor.execute_query(safe_sql, read_only=False)
+    logger.info(f"DEBUG: Execution result status: {execution_result['status']}")
+    
+    if execution_result["status"] == QueryStatus.ERROR:
+        logger.error(f"DEBUG: Execution failed: {execution_result.get('error')}")
     
     # Generate insights if requested
     insights = None
@@ -97,6 +123,7 @@ async def execute_natural_language_query(
     
     if request.include_insights and execution_result["status"] == QueryStatus.SUCCESS:
         try:
+            logger.info("DEBUG: Generating insights")
             insight_list = await ai_service.generate_insights(
                 query_results=execution_result["results"],
                 original_question=request.natural_language_query
@@ -112,18 +139,19 @@ async def execute_natural_language_query(
                 original_question=request.natural_language_query
             )
         except Exception as e:
-            print(f"Failed to generate insights: {e}")
+            logger.error(f"Failed to generate insights: {e}")
     
     # Get SQL explanation if requested
     sql_explanation = None
     if request.explain_sql:
         try:
+            logger.info("DEBUG: Explaining SQL")
             sql_explanation = await ai_service.explain_sql(
                 sql=safe_sql,
                 schema_info=schema_info
             )
         except Exception as e:
-            print(f"Failed to explain SQL: {e}")
+            logger.error(f"Failed to explain SQL: {e}")
     
     # Save query to database
     query_record = Query(
@@ -259,9 +287,11 @@ async def create_database_connection(
     """Create a new database connection"""
     
     # Test connection
+    logger.info(f"DEBUG: Attempting to connect to: {connection.connection_string}")
     try:
         executor = QueryExecutor(connection.connection_string)
         is_connected = await executor.test_connection()
+        logger.info(f"DEBUG: Connection test result: {is_connected}")
         
         if not is_connected:
             raise HTTPException(
